@@ -89,7 +89,8 @@ async function migrate() {
           if (
             err.code === 'ER_TABLE_EXISTS_ERROR' ||
             err.code === 'ER_DUP_ENTRY' ||
-            err.code === 'ER_DB_CREATE_EXISTS'
+            err.code === 'ER_DB_CREATE_EXISTS' ||
+            err.code === 'ER_DUP_FIELDNAME'
           ) {
             console.log('ℹ Skipped (already exists)');
           } else {

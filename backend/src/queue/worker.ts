@@ -72,8 +72,8 @@ async function processEmailDelivery(job: Job<OutgoingMailTask>): Promise<void> {
 
     
     await pool.execute(
-      'UPDATE MailDispatch SET status = ?, sentTime = ?, senderEmail = ? WHERE id = ?',
-      ['SENT', new Date(), sendResult.messageId, dispatchId]
+      'UPDATE MailDispatch SET status = ?, sentTime = ?, senderEmail = ?, previewUrl = ? WHERE id = ?',
+      ['SENT', new Date(), sendResult.messageId, sendResult.previewUrl || null, dispatchId]
     );
 
     console.log(

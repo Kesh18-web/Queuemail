@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS MailDispatch (
   status ENUM('PENDING', 'SCHEDULED', 'SENDING', 'SENT', 'FAILED', 'RATE_LIMITED') DEFAULT 'PENDING',
   errorMessage TEXT,
   senderEmail VARCHAR(255),
+  previewUrl TEXT NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_campaignId (campaignId),
@@ -65,4 +66,7 @@ CREATE TABLE IF NOT EXISTS SenderAccount (
   updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_isActive (isActive)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Add previewUrl column to existing MailDispatch tables (safe to run multiple times)
+ALTER TABLE MailDispatch ADD COLUMN previewUrl TEXT NULL AFTER errorMessage;
 

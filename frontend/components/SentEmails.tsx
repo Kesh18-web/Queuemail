@@ -9,6 +9,7 @@ interface Dispatch {
   sentTime: string | null;
   status: string;
   errorMessage?: string;
+  previewUrl?: string | null;
   campaign: {
     id: string;
     subject: string;
@@ -104,6 +105,9 @@ export default function SentEmails({ userId }: SentEmailsProps) {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">
                 Status
               </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                Preview
+              </th>
             </tr>
           </thead>
           <tbody className="bg-white/50 dark:bg-zinc-900/50 divide-y divide-gray-200 dark:divide-zinc-700">
@@ -132,6 +136,20 @@ export default function SentEmails({ userId }: SentEmailsProps) {
                     <div className="text-xs text-red-600 dark:text-red-400 mt-1">
                       {dispatch.errorMessage}
                     </div>
+                  )}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm">
+                  {dispatch.previewUrl ? (
+                    <a
+                      href={dispatch.previewUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      View email
+                    </a>
+                  ) : (
+                    <span className="text-gray-400 dark:text-gray-600">—</span>
                   )}
                 </td>
               </tr>

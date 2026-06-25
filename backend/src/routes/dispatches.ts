@@ -60,6 +60,7 @@ router.get('/scheduled', async (req: Request, res: Response) => {
       status: d.status,
       errorMessage: d.errorMessage,
       senderEmail: d.senderEmail,
+      previewUrl: d.previewUrl,
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
       campaign: {
@@ -111,8 +112,7 @@ router.get('/sent', async (req: Request, res: Response) => {
       sentTime: Date | null;
       status: string;
       errorMessage: string | null;
-      senderEmail: string | null;
-      createdAt: Date;
+      senderEmail: string | null;      previewUrl: string | null;      createdAt: Date;
       updatedAt: Date;
       campaign_id: string;
       campaign_subject: string;
@@ -138,6 +138,7 @@ router.get('/sent', async (req: Request, res: Response) => {
       status: d.status,
       errorMessage: d.errorMessage,
       senderEmail: d.senderEmail,
+      previewUrl: d.previewUrl,
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
       campaign: {
