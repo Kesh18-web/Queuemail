@@ -1,175 +1,203 @@
-# ReachInbox – Email Scheduler & Dashboard
+﻿# Queuemail
 
-This project implements a production-style email scheduling system similar to what ReachInbox uses internally.  
-The focus is on **reliable background scheduling**, **rate-limited delivery**, and **restart safety**, rather than sending real emails.
+A full-stack email scheduling system built with TypeScript. Upload a CSV of recipients, set a future send time, and the system handles the rest — queueing, throttling, retrying, and tracking every email through to delivery.
 
-The system is built with **TypeScript**, **Express**, **BullMQ**, **Redis**, **MySQL**, and a **Next.js frontend dashboard**.
-
----
-
-## What this system does
-
-The application allows users to:
-
-- Schedule emails to be sent at a specific future time
-- Process email delivery asynchronously using a queue (no cron jobs)
-- Enforce hourly rate limits and per-sender throttling
-- Restart the server without losing scheduled emails
-- View scheduled and sent emails in a dashboard
-
-Emails are sent using **Ethereal Email**, a fake SMTP service designed for safe testing and demos.
+Built with **Express**, **BullMQ**, **Redis**, **MySQL**, and a **Next.js** dashboard.
 
 ---
 
-## High-level architecture
+## What it does
 
-The system is split into four main parts:
-
-- **API Server (Express)**  
-  Accepts requests, validates input, and persists data
-
-- **Database (MySQL)**  
-  Stores campaigns and individual email dispatch records
-
-- **Queue (BullMQ + Redis)**  
-  Handles delayed execution and retry logic
-
-- **Worker**  
-  Processes queued jobs, enforces rate limits, and sends emails
-
-All background work is driven by **BullMQ delayed jobs**, not cron.
+- Schedule a bulk email campaign for a future time
+- Each recipient gets its own queued job with an individually calculated send time
+- A background worker processes jobs, enforces rate limits, and sends via SMTP
+- Sent emails generate a live preview URL (via Ethereal) so you can inspect the actual content
+- The dashboard shows all scheduled and sent emails with real-time status
+- Server restarts are safe — all queued jobs survive in Redis and resume automatically
 
 ---
 
-## How scheduling works
+## Architecture
 
-When a campaign is created:
+```
+Browser (Next.js)
+      │
+      ▼
+  Express API  ──────────────►  MySQL
+      │                      (campaigns, dispatches,
+      │                       sender accounts)
+      ▼
+  BullMQ Queue
+  (Redis)
+      │
+      ▼
+  Worker Process
+  ├── checks DB for duplicate sends
+  ├── evaluates rate limits (Redis counters)
+  ├── sends email via SMTP (Ethereal)
+  └── updates dispatch status + preview URL
+```
 
-1. Campaign metadata is stored in `MailCampaign`
-2. Each recipient becomes a separate `MailDispatch` record
-3. A send time is calculated per email using:
-   - campaign start time  
-   - delay between emails  
-4. A BullMQ job is created for each dispatch with a calculated delay
-
-Because delayed jobs are stored in Redis, scheduled emails survive server restarts automatically.
-
----
-
-
-## Worker behavior & email delivery
-
-A background worker listens to the `reachinboxScheduler` queue.
-
-For each job:
-
-1. The worker checks the database to ensure the email hasn’t already been sent  
-2. Rate limits are evaluated using Redis counters  
-3. If allowed, the email is sent via Ethereal SMTP  
-4. The dispatch record is updated with status and timestamps  
-
-If a rate limit is exceeded, the job is **rescheduled** instead of failed.
+The API and worker run in the same Express process. All deferred work goes through BullMQ — no cron jobs.
 
 ---
 
-## Rate limiting strategy
+## Database schema
 
- Redis counters are used to support:
+| Table | Purpose |
+|---|---|
+| `User` | Google OAuth user records |
+| `MailCampaign` | One row per campaign (subject, body, schedule config) |
+| `MailDispatch` | One row per recipient per campaign — tracks status, send time, preview URL |
+| `SenderAccount` | SMTP credentials; persisted so the same account survives restarts |
 
-- Global hourly limits
-- Per-sender hourly limits
-- Correct behavior across multiple workers
-- Clear auditability in the database
+`MailDispatch` statuses: `PENDING` → `SCHEDULED` → `SENDING` → `SENT` / `FAILED` / `RATE_LIMITED`
 
-Counters are stored using hour-based UTC keys, for example:
+---
 
-- `reachSessionLimit:{senderId}:YYYY-MM-DD-HH`
+## Scheduling logic
 
-When a limit is hit:
+When you create a campaign via `POST /api/campaigns`:
 
-- Counter increments are rolled back
-- Dispatch status is updated to `RATE_LIMITED`
-- The job is moved to the next hour window.
+1. A `MailCampaign` row is inserted
+2. For each recipient, a `MailDispatch` row is created with a calculated `scheduledTime`:
+   ```
+   scheduledTime = startTime + (index × delayBetweenMs)
+   ```
+3. A BullMQ delayed job is enqueued for each dispatch with a matching delay
+4. Jobs fire at the right time even after a server restart, because BullMQ state lives in Redis
+
+---
+
+## Worker & delivery
+
+The worker listens to the `reachinboxScheduler` queue with configurable concurrency.
+
+For each job it:
+1. Checks if the dispatch is already `SENT` — skips if so (idempotency guard)
+2. Marks the dispatch `SENDING`
+3. Runs the rate limit check
+4. Sends the email via the persisted SMTP account
+5. Updates the dispatch to `SENT` and stores the Ethereal preview URL
+
+**On rate limit hit:** rolls back the Redis counter increment, marks the dispatch `RATE_LIMITED`, and reschedules the job for the start of the next hour window. No emails are dropped.
+
+**On failure:** marks the dispatch `FAILED` with an error message. BullMQ retries up to 3 times with exponential backoff (starting at 5 s).
+
+---
+
+## Rate limiting
+
+Two Redis counters are incremented per email, keyed by the current UTC hour:
+
+```
+reachSessionLimit:global:YYYY-MM-DD-HH
+reachSessionLimit:{senderId}:YYYY-MM-DD-HH
+```
+
+Both the global hourly cap and the per-sender cap must pass before an email is sent. If either limit is exceeded, both increments are rolled back before rescheduling.
+
+Defaults (configurable via env):
+- Global limit: `200` emails/hour
+- Per-sender limit: `50` emails/hour
 
 ---
 
 ## Restart safety
 
-State is persisted at two layers:
+Nothing is lost on restart because state lives in two durable stores:
 
-- **MySQL** stores campaigns and dispatch records  
-- **Redis** stores all BullMQ jobs  
+- **MySQL** — all campaign and dispatch records
+- **Redis** — all BullMQ delayed jobs
 
-On restart:
-
-- BullMQ reloads delayed jobs from Redis
-- The worker resumes processing automatically
-- Job IDs prevent duplicate sends
-- Already-sent emails are skipped defensively
-
-No manual recovery logic is required.
+On startup, BullMQ reconnects to Redis and delayed jobs resume firing on schedule. The worker also guards against duplicate sends by checking the dispatch status before processing.
 
 ---
 
-## Ethereal Email (testing SMTP)
+## Preview URLs (Ethereal)
 
-Emails are sent using **Ethereal**, which does not deliver real emails.
+Emails are sent through [Ethereal](https://ethereal.email), a free fake SMTP service. No real emails are delivered.
 
-Each sent email generates a **preview URL**, which can be opened in a browser to view the email content.  
-This allows safe verification without sending real emails.
+On startup, the app loads the sender account from `SenderAccount` in MySQL (or creates a new Ethereal account and persists it if none exists). This means the same inbox is reused across restarts — your sent emails do not disappear.
+
+Every sent email returns a preview URL that is stored on the `MailDispatch` record and shown as a clickable link in the dashboard.
 
 ---
 
-## Running the project locally
+## API routes
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/users` | Create or update a user (Google OAuth) |
+| `POST` | `/api/campaigns` | Create a campaign and schedule all dispatches |
+| `GET` | `/api/dispatches/scheduled` | Pending/scheduled dispatches for a user |
+| `GET` | `/api/dispatches/sent` | Sent/failed dispatches for a user |
+| `GET` | `/api/status` | Rate limit status and queue health |
+
+---
+
+## Running locally
 
 ### Prerequisites
 
 - Node.js 18+
-- Docker (for MySQL and Redis)
-- Google OAuth credentials (for frontend login)
+- Docker
 
----
-
-### Start infrastructure services
+### 1. Start MySQL and Redis
 
 ```bash
 docker-compose up -d
+```
 
----
-
-## Backend setup
+### 2. Backend
 
 ```bash
 cd backend
 npm install
 npm run db:migrate
 npm run dev
+```
 
----
+Runs on `http://localhost:3001`.
 
-## Frontend Setup
+### 3. Frontend
 
+```bash
 cd frontend
 npm install
 npm run dev
+```
+
+Runs on `http://localhost:3000`.
 
 ---
 
-## Environment Variables
-PORT=
-DB_HOST=
-DB_PORT=
-DB_USER=
-DB_PASSWORD=
-DB_NAME=
+## Environment variables
 
-REDIS_HOST=
-REDIS_PORT=
+Create a `.env` file in `backend/`:
 
-MAX_EMAILS_PER_HOUR=
-MAX_EMAILS_PER_HOUR_PER_SENDER=
-MIN_DELAY_BETWEEN_EMAILS_MS=
-WORKER_CONCURRENCY=
+```env
+PORT=3001
 
+DB_HOST=localhost
+DB_PORT=3307
+DB_USER=user
+DB_PASSWORD=password
+DB_NAME=reachinbox_email
 
+REDIS_HOST=localhost
+REDIS_PORT=6379
 
+MAX_EMAILS_PER_HOUR=200
+MAX_EMAILS_PER_HOUR_PER_SENDER=50
+MIN_DELAY_BETWEEN_EMAILS_MS=2000
+WORKER_CONCURRENCY=5
+
+JWT_SECRET=change-this-in-production
+```
+
+Create a `.env.local` file in `frontend/`:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
